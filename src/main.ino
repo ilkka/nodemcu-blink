@@ -1,5 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 
 // Update these with values suitable for your network.
 
@@ -16,6 +17,8 @@ PubSubClient client(espClient);
 long lastMsg = 0;
 char msg[50];
 int value = 0;
+
+boolean gpioState[] = {false, false};
 
 void setup() {
   pinMode(LED, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
@@ -47,23 +50,71 @@ void setup_wifi() {
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
+  Serial.println("On message");
 
-  // Switch on the LED if an 1 was received as first character
-  if ((char)payload[0] == '1') {
-    digitalWrite(LED, LOW);   // Turn the LED on (Note that LOW is the voltage level
-    // but actually the LED is on; this is because
-    // it is acive low on the ESP-01)
-  } else {
-    digitalWrite(LED, HIGH);  // Turn the LED off by making the voltage HIGH
+  char json[length + 1];
+  strncpy (json, (char*)payload, length);
+  json[length] = '\0';
+
+  Serial.print("Topic: ");
+  Serial.println(topic);
+  Serial.print("Message: ");
+  Serial.println(json);
+
+  // Decode JSON request
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& data = jsonBuffer.parseObject((char*)json);
+
+  if (!data.success())
+  {
+    Serial.println("parseObject() failed");
+    return;
   }
 
+  // Check request method
+  String methodName = String((const char*)data["method"]);
+
+  if (methodName.equals("getGpioStatus")) {
+    // Reply with GPIO status
+    String responseTopic = String(topic);
+    responseTopic.replace("request", "response");
+    client.publish(responseTopic.c_str(), get_gpio_status().c_str());
+  } else if (methodName.equals("setGpioStatus")) {
+    // Update GPIO status and reply
+    set_gpio_status(data["params"]["pin"], data["params"]["enabled"]);
+    String responseTopic = String(topic);
+    responseTopic.replace("request", "response");
+    client.publish(responseTopic.c_str(), get_gpio_status().c_str());
+    client.publish("v1/devices/me/attributes", get_gpio_status().c_str());
+  }
+}
+
+String get_gpio_status() {
+  // Prepare gpios JSON payload string
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& data = jsonBuffer.createObject();
+  data[String(D1)] = gpioState[0] ? true : false;
+  data[String(D2)] = gpioState[1] ? true : false;
+  char payload[256];
+  data.printTo(payload, sizeof(payload));
+  String strPayload = String(payload);
+  Serial.print("Get gpio status: ");
+  Serial.println(strPayload);
+  return strPayload;
+}
+
+void set_gpio_status(int pin, boolean enabled) {
+  if (pin == D1) {
+    // Output GPIOs state
+    digitalWrite(D1, enabled ? HIGH : LOW);
+    // Update GPIOs state
+    gpioState[0] = enabled;
+  } else if (pin == D2) {
+    // Output GPIOs state
+    digitalWrite(D2, enabled ? HIGH : LOW);
+    // Update GPIOs state
+    gpioState[1] = enabled;
+  }
 }
 
 void reconnect() {
@@ -101,6 +152,6 @@ void loop() {
     snprintf (msg, 75, "hello world #%ld", value);
     Serial.print("Publish message: ");
     Serial.println(msg);
-    client.publish("outTopic", msg);
+    client.publish("v1/devices/me/telemetry", "{\"status\":\"ok\"}");
   }
 }
